@@ -42,6 +42,7 @@ const background = {
 const definition = {
   ...selectTheme(getOpenCodeTheme(), "light"),
   "@dialog": { background: { base: "$background.raised.base" } },
+  "@palette": { background: { base: "$background.raised.max" } },
 } satisfies ThemeDefinition
 
 export const document = {

@@ -3,6 +3,7 @@ import { batch, createContext, createEffect, onCleanup, Show, useContext, type J
 import { Keymap } from "../context/keymap"
 import { ThemeContextProvider, useTheme } from "../context/theme"
 import { InputRenderable, MouseButton, Renderable, RGBA } from "@opentui/core"
+import type { SurfaceName } from "@opencode/theme/tui"
 import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
 import { useClipboard } from "../context/clipboard"
@@ -25,13 +26,12 @@ export function Dialog(
   }>,
 ) {
   const dimensions = useTerminalDimensions()
-  const theme = useTheme().surface("dialog")
+  const theme = useTheme()
   const renderer = useRenderer()
 
   let dismiss = false
   return (
-    <ThemeContextProvider context="dialog">
-      <box
+    <box
       onMouseDown={() => {
         dismiss = !!renderer.getSelection()
       }}
@@ -68,8 +68,7 @@ export function Dialog(
       >
         {props.children}
       </box>
-      </box>
-    </ThemeContextProvider>
+    </box>
   )
 }
 
@@ -82,6 +81,7 @@ function init() {
     }[],
     size: "medium" as DialogSize,
     centered: false,
+    surface: undefined as SurfaceName | undefined,
   })
 
   const renderer = useRenderer()
@@ -163,11 +163,16 @@ function init() {
       batch(() => {
         setStore("size", "medium")
         setStore("centered", false)
+        setStore("surface", undefined)
         setStore("stack", [])
       })
       refocus()
     },
-    replace(input: any, onClose?: () => void, options?: { key?: unknown; size?: DialogSize }) {
+    replace(
+      input: any,
+      onClose?: () => void,
+      options?: { key?: unknown; size?: DialogSize; surface?: SurfaceName },
+    ) {
       if (store.stack.length === 0) {
         focus = renderer.currentFocusedRenderable
         focus?.blur()
@@ -178,6 +183,7 @@ function init() {
       batch(() => {
         setStore("size", options?.size ?? "medium")
         setStore("centered", false)
+        setStore("surface", options?.surface)
         setStore("stack", [
           {
             element: input,
@@ -195,6 +201,9 @@ function init() {
     },
     get centered() {
       return store.centered
+    },
+    get surface() {
+      return store.surface
     },
     get key() {
       return store.stack.at(-1)?.key
@@ -240,9 +249,11 @@ export function DialogProvider(props: ParentProps) {
         }
       >
         <Show when={value.stack.length}>
-          <Dialog onClose={() => value.clear()} size={value.size} centered={value.centered}>
-            {value.stack.at(-1)!.element}
-          </Dialog>
+          <ThemeContextProvider context={value.surface ?? "dialog"}>
+            <Dialog onClose={() => value.clear()} size={value.size} centered={value.centered}>
+              {value.stack.at(-1)!.element}
+            </Dialog>
+          </ThemeContextProvider>
         </Show>
       </box>
     </ctx.Provider>

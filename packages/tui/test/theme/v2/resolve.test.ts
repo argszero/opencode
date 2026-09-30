@@ -323,6 +323,36 @@ test("surface overrides rewire references and reset action states from their bas
   expect(raised.text.action.primary.focused.toInts()).toEqual([85, 85, 85, 255])
 })
 
+test("the palette surface reuses the dialog surface when it defines none", () => {
+  const theme = resolveTheme(override(light, { "@dialog": { background: { base: "#111111" } } }))
+  expect(theme.surface("palette").background.base.toInts()).toEqual([17, 17, 17, 255])
+})
+
+test("the built-in themes render the palette exactly like the dialog", () => {
+  for (const mode of ["light", "dark"] as const) {
+    const theme = resolveTheme(selectTheme(getOpenCodeTheme(), mode))
+    expect(theme.surface("palette").background.base.equals(theme.surface("dialog").background.base)).toBeTrue()
+  }
+})
+
+test("the palette surface overrides the dialog surface it inherits from", () => {
+  const theme = resolveTheme(
+    override(light, {
+      "@dialog": {
+        text: { base: "#333333", action: { primary: { $focused: "#555555" } } },
+        background: { base: "#111111" },
+      },
+      "@palette": { background: { base: "#666666" } },
+    }),
+  )
+  const palette = theme.surface("palette")
+  expect(palette.background.base.toInts()).toEqual([102, 102, 102, 255])
+  expect(palette.background.action.primary.hovered.equals(theme.surface("dialog").background.action.primary.hovered))
+    .toBeTrue()
+  expect(palette.text.base.toInts()).toEqual([51, 51, 51, 255])
+  expect(palette.text.action.primary.focused.toInts()).toEqual([85, 85, 85, 255])
+})
+
 test("rejects missing and circular references", () => {
   expect(() => resolveTheme(override(light, { text: { base: "$missing" } }))).toThrow(
     'Theme reference "$missing" was not found',

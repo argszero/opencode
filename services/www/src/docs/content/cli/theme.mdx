@@ -244,3 +244,24 @@ Panels, dialogs, menus, and toasts select their depth from `background.raised`. 
 ```
 
 The TUI resolves references again after applying `@dialog`, so tokens that reference `$background.base` follow the dialog background. A contextual action `base` becomes the fallback for its unspecified states; explicit state overrides still win.
+
+### Palette surface
+
+The command palette opens on a `@palette` surface, which starts from `@dialog` and only needs the tokens it changes. Setting `@palette.background.base` fills the palette without making every other dialog opaque:
+
+```json title="Inside base or a mode"
+{
+  "@dialog": {
+    "background": {
+      "base": "transparent"
+    }
+  },
+  "@palette": {
+    "background": {
+      "base": "$background.raised.max"
+    }
+  }
+}
+```
+
+A theme that omits `@palette` renders the palette exactly like the other dialogs.

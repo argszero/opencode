@@ -52,6 +52,13 @@ const isTextContentType = (contentType: string | undefined) => {
   )
 }
 
+const captureRequestBody = (bytes: Uint8Array) => {
+  const body = new TextDecoder().decode(bytes)
+  return Buffer.from(body, "utf8").equals(bytes)
+    ? { body }
+    : { body: Buffer.from(bytes).toString("base64"), bodyEncoding: "base64" as const }
+}
+
 const captureResponseBody = (response: HttpClientResponse.HttpClientResponse, contentType: string | undefined) =>
   response.arrayBuffer.pipe(
     Effect.map((bytes) =>
@@ -107,11 +114,12 @@ export const recordingLayer = (
       const snapshotRequest = (request: HttpClientRequest.HttpClientRequest) =>
         Effect.gen(function* () {
           const web = yield* HttpClientRequest.toWeb(request).pipe(Effect.orDie)
+          const bytes = new Uint8Array(yield* Effect.promise(() => web.arrayBuffer()))
           return redactor.request({
             method: web.method,
             url: web.url,
             headers: Object.fromEntries(web.headers.entries()),
-            body: yield* Effect.promise(() => web.text()),
+            ...captureRequestBody(bytes),
           })
         })
 

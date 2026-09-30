@@ -777,6 +777,84 @@ describe("http-recorder", () => {
     }
   })
 
+  test("records and replays binary request bodies without conflating distinct bytes", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "http-recorder-binary-request-"))
+    const recorded = new Uint8Array([0x80, 0x00, 0xff])
+    const other = new Uint8Array([0x81, 0x00, 0xff])
+    using server = Bun.serve({
+      port: 0,
+      fetch: async (request) => new Response(String((await request.arrayBuffer()).byteLength)),
+    })
+    const url = `http://127.0.0.1:${server.port}/upload`
+    const previous = process.env.CI
+    delete process.env.CI
+    try {
+      const upload = (bytes: Uint8Array) =>
+        Effect.gen(function* () {
+          const http = yield* HttpClient.HttpClient
+          const response = yield* http.execute(
+            HttpClientRequest.post(url, {
+              headers: { "content-type": "application/octet-stream" },
+              body: HttpBody.uint8Array(bytes, "application/octet-stream"),
+            }),
+          )
+          return yield* response.text
+        })
+
+      expect(await runWith("binary-request", { directory }, upload(recorded))).toBe("3")
+      const cassette = JSON.parse(fs.readFileSync(path.join(directory, "binary-request.json"), "utf8"))
+
+      expect(cassette.interactions[0].request.bodyEncoding).toBe("base64")
+      expect(cassette.interactions[0].request.body).toBe(Buffer.from(recorded).toString("base64"))
+
+      await server.stop()
+      expect(await runWith("binary-request", { directory }, upload(recorded))).toBe("3")
+
+      const exit = await Effect.runPromise(
+        Effect.exit(upload(other).pipe(Effect.provide(HttpRecorder.http("binary-request", { directory })))),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(failureText(exit)).toContain('Fixture "binary-request" does not match the current request')
+      expect(failureText(exit)).toContain(Buffer.from(other).toString("base64"))
+    } finally {
+      if (previous !== undefined) process.env.CI = previous
+    }
+  })
+
+  test("replay reports a body encoding difference against a legacy text request snapshot", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "http-recorder-binary-request-legacy-"))
+    await seedCassetteDirectory(directory, "legacy-binary", [
+      {
+        transport: "http",
+        request: {
+          method: "POST",
+          url: "https://example.test/upload",
+          headers: { "content-type": "application/octet-stream" },
+          body: "\ufffd",
+        },
+        response: { status: 200, headers: { "content-type": "text/plain" }, body: "ok" },
+      },
+    ])
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        Effect.gen(function* () {
+          const http = yield* HttpClient.HttpClient
+          return yield* http.execute(
+            HttpClientRequest.post("https://example.test/upload", {
+              headers: { "content-type": "application/octet-stream" },
+              body: HttpBody.uint8Array(new Uint8Array([0x80]), "application/octet-stream"),
+            }),
+          )
+        }).pipe(Effect.provide(HttpRecorder.http("legacy-binary", { directory }))),
+      ),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureText(exit)).toContain("bodyEncoding:")
+    expect(failureText(exit)).toContain("expected text, received base64")
+  })
+
   test("UnsafeCassetteError fails the request when a recording would write a known secret", async () => {
     using server = Bun.serve({ port: 0, fetch: () => new Response("Bearer abcdefghijklmnopqrstuvwxyz1234") })
     const url = `http://127.0.0.1:${server.port}/leaky`

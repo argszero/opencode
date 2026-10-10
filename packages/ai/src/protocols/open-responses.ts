@@ -23,6 +23,7 @@ import { classifyProviderFailure } from "../provider-error.js"
 import { effortUpdate } from "../effort-updates.js"
 import { OpenResponsesOptions } from "./utils/open-responses-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
+import { ToolCallID } from "./utils/tool-call-id.js"
 import { ToolStream } from "./utils/tool-stream.js"
 
 const ADAPTER = "open-responses"
@@ -487,12 +488,16 @@ const itemID = (providerMetadata: ProviderMetadata | undefined, providerMetadata
   return separator > 0 && separator < metadata.itemId.length - 1 ? metadata.itemId : undefined
 }
 
-const lowerToolCall = (part: ToolCallPart, providerMetadataKey: string): OpenResponsesInputItem => {
+const lowerToolCall = (
+  part: ToolCallPart,
+  providerMetadataKey: string,
+  toolCallID: (id: string) => string,
+): OpenResponsesInputItem => {
   const id = itemID(part.providerMetadata, providerMetadataKey)
   return {
     type: "function_call",
     ...(id === undefined ? {} : { id }),
-    call_id: part.id,
+    call_id: toolCallID(part.id),
     name: part.name,
     namespace: part.namespace,
     arguments: ProviderShared.encodeJson(part.input === undefined ? {} : part.input),
@@ -608,6 +613,9 @@ const lowerMessages = Effect.fnUntraced(function* (
 ) {
   const input: OpenResponsesInputItem[] = []
   const providerMetadataKey = metadataKey(request.model)
+  // An incoming provider ID can be longer than this wire format accepts, so the target
+  // decides the ID rather than the source it was replayed from.
+  const toolCallID = ToolCallID.normalizer(request, ToolCallID.acceptsResponsesID)
 
   for (const message of request.messages) {
     const rawMetadata = message.providerMetadata?.[providerMetadataKey]
@@ -699,7 +707,7 @@ const lowerMessages = Effect.fnUntraced(function* (
         if (part.type === "tool-call") {
           flushText()
           if (part.providerExecuted === true) continue
-          input.push(lowerToolCall(part, providerMetadataKey))
+          input.push(lowerToolCall(part, providerMetadataKey, toolCallID))
           continue
         }
         if (part.type === "tool-result" && part.providerExecuted === true) {
@@ -756,7 +764,7 @@ const lowerMessages = Effect.fnUntraced(function* (
         return yield* ProviderShared.unsupportedContent(adapter.name, "tool", ["tool-result"])
       input.push({
         type: "function_call_output",
-        call_id: part.id,
+        call_id: toolCallID(part.id),
         output: yield* lowerToolResultOutput(part, request, adapter),
       })
     }

@@ -195,7 +195,6 @@ describe("OpenAI-compatible Chat route", () => {
 
   it.effect("normalizes tool call IDs for the selected model family", () =>
     Effect.gen(function* () {
-      const longID = `call_${"a".repeat(48)}`
       const cases = [
         { provider: "custom", model: "mistral-small", id: "toolu_01CBhTTz95qkd9LJMdC9sf8t", expected: "toolu01CB" },
         { provider: "custom", model: "devstral-small", id: "abc", expected: "abc000000" },
@@ -203,7 +202,6 @@ describe("OpenAI-compatible Chat route", () => {
         { provider: "custom", model: "pixtral-large", id: "toolu_01CBhTTz95", expected: "toolu01CB" },
         { provider: "custom", model: "open-mixtral-8x22b", id: "toolu_01CBhTTz95", expected: "toolu01CB" },
         { provider: "gateway", model: "anthropic/claude-sonnet-4", id: "call|item/+", expected: "call_item__" },
-        { provider: "gateway", model: "openai/gpt-4o", id: longID, expected: longID.slice(0, 40) },
         { provider: "custom", model: "ordinary-model", id: "call|item/+", expected: "call|item/+" },
         { provider: "mistral", model: "zai-glm-5-2", id: "call_long_identifier", expected: "call_long_identifier" },
       ]
@@ -226,6 +224,52 @@ describe("OpenAI-compatible Chat route", () => {
             { role: "assistant", tool_calls: [{ id: item.expected }] },
             { role: "tool", tool_call_id: item.expected },
           ])
+        }),
+      )
+    }),
+  )
+
+  it.effect("bounds tool call IDs a gateway cannot accept, keeping calls distinct and paired", () =>
+    Effect.gen(function* () {
+      // Vertex/Gemini thinking models reach OpenAI-compatible gateways with the signature
+      // embedded in the call ID, which is far past the limit this wire format enforces.
+      const signed = (uuid: string) => `vertex_tool_${uuid}__sig_${"Q2lNQkFZ".repeat(180)}`
+      const ids = [signed("8f14e45f-ceea-467a-9a3c-1b2d3e4f5a6b"), signed("0d1e2f3a-1111-2222-3333-444455556666")]
+      const messages = [
+        Message.assistant(ids.map((id) => ToolCallPart.make({ id, name: "lookup", input: {} }))),
+        Message.tool({ id: ids[0], name: "lookup", result: { type: "content", value: [] } }),
+        Message.tool({ id: ids[1], name: "lookup", result: { type: "content", value: [] } }),
+      ]
+      const targets = [
+        { provider: "litellm", model: "gpt-5-mini" },
+        { provider: "gateway", model: "openai/gpt-4o" },
+        { provider: "gateway", model: "anthropic/claude-sonnet-4" },
+      ]
+
+      yield* Effect.forEach(targets, (target) =>
+        Effect.gen(function* () {
+          const compile = () =>
+            compileRequest(
+              LLM.request({
+                model: OpenAICompatibleChat.route
+                  .with({ provider: target.provider, endpoint: { baseURL: "https://gateway.test/v1" } })
+                  .model({ id: target.model }),
+                messages,
+              }),
+            )
+          const prepared = yield* compile()
+          const emitted = prepared.body.messages.flatMap((message) => {
+            if (message.role === "assistant") return (message.tool_calls ?? []).map((call) => call.id)
+            if (message.role === "tool") return [message.tool_call_id]
+            return []
+          })
+
+          expect(emitted.filter((id) => id.length > 40)).toEqual([])
+          expect(new Set(emitted).size).toBe(2)
+          expect(emitted[2]).toBe(emitted[0])
+          expect(emitted[3]).toBe(emitted[1])
+          // The same history projects to the same IDs, so a replay stays cacheable.
+          expect((yield* compile()).body.messages).toMatchObject(prepared.body.messages)
         }),
       )
     }),

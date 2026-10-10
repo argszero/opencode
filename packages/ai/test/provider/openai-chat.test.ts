@@ -511,7 +511,7 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
-  it.effect("limits OpenAI and Azure Chat tool call IDs to 40 characters", () =>
+  it.effect("bounds excessive tool call IDs for OpenAI and Azure Chat and keeps each result paired", () =>
     Effect.gen(function* () {
       const id = `call_${"a".repeat(48)}`
       const models = [
@@ -531,10 +531,14 @@ describe("OpenAI Chat route", () => {
             }),
           )
 
-          expect(prepared.body.messages).toMatchObject([
-            { role: "assistant", tool_calls: [{ id: id.slice(0, 40) }] },
-            { role: "tool", tool_call_id: id.slice(0, 40) },
-          ])
+          const emitted = prepared.body.messages.flatMap((message) => {
+            if (message.role === "assistant") return (message.tool_calls ?? []).map((call) => call.id)
+            if (message.role === "tool") return [message.tool_call_id]
+            return []
+          })
+          expect(emitted).toHaveLength(2)
+          expect(emitted[0]).toBe(emitted[1])
+          expect(emitted[0].length).toBeLessThanOrEqual(40)
         }),
       )
     }),

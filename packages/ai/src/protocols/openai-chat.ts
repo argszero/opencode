@@ -26,6 +26,7 @@ import { classifyProviderFailure } from "../provider-error.js"
 import { isRecord, JsonObject, optionalArray, optionalNull, ProviderShared } from "./shared.js"
 import { OpenAIOptions } from "./utils/openai-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
+import { ToolCallID } from "./utils/tool-call-id.js"
 import { ToolStream } from "./utils/tool-stream.js"
 
 const ADAPTER = "openai-chat"
@@ -574,20 +575,17 @@ const lowerMessages = Effect.fnUntraced(function* (request: LLMRequest, options:
       modelID.includes("deepseek"))
   const reasoningField = request.model.compatibility?.reasoningField
   const mistral = ["mistral", "devstral", "codestral", "pixtral", "mixtral"].some((family) => modelID.includes(family))
+  // An incoming provider ID can be longer than this wire format accepts, so the target
+  // decides the ID rather than the source it was replayed from.
+  const boundedToolCallID = ToolCallID.normalizer(request, ToolCallID.acceptsChatID)
+  const toolCallID = (id: string) => {
+    if (mistral) return id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 9).padEnd(9, "0")
+    return boundedToolCallID(modelID.includes("claude") ? id.replace(/[^a-zA-Z0-9_-]/g, "_") : id)
+  }
   const lowering = {
     ...options,
     providerMetadataKey: request.model.route.providerMetadataKey ?? String(request.model.provider),
-    toolCallID: (id: string) => {
-      if (mistral)
-        return id
-          .replace(/[^a-zA-Z0-9]/g, "")
-          .slice(0, 9)
-          .padEnd(9, "0")
-      if (modelID.includes("claude")) return id.replace(/[^a-zA-Z0-9_-]/g, "_")
-      if (request.model.provider === "openai" || request.model.provider === "azure" || modelID.startsWith("openai/"))
-        return id.slice(0, 40)
-      return id
-    },
+    toolCallID,
   }
   const requireAssistantAfterTool = request.model.compatibility?.requireAssistantAfterTool ?? mistral
   const bridgeTools = () => {

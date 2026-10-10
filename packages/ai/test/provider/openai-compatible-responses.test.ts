@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
-import { LLM, LLMEvent, Message, ToolDefinition, Media } from "../../src/index.js"
+import { LLM, LLMEvent, Message, ToolCallPart, ToolDefinition, Media } from "../../src/index.js"
 import { configure } from "../../src/providers/openai-compatible-responses.js"
 import { OpenAI } from "../../src/providers.js"
 import { OpenResponses } from "../../src/protocols/open-responses.js"
@@ -154,6 +154,37 @@ describe("Open Responses-compatible route", () => {
           output: [{ type: "input_file", filename: "result.pdf", file_data: pdf }],
         },
       ])
+    }),
+  )
+
+  it.effect("bounds tool call IDs a Responses target cannot accept, keeping calls distinct and paired", () =>
+    Effect.gen(function* () {
+      const model = configure({
+        apiKey: "test-key",
+        baseURL: "https://responses.example.test/v1",
+        provider: "github-copilot",
+      }).model("gpt-5.3-codex")
+      // A signature embedded in the call ID by a provider this target never issued it for.
+      const signed = (uuid: string) => `vertex_tool_${uuid}__sig_${"Q2lNQkFZ".repeat(180)}`
+      const ids = [signed("8f14e45f-ceea-467a-9a3c-1b2d3e4f5a6b"), signed("0d1e2f3a-1111-2222-3333-444455556666")]
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          messages: [
+            Message.assistant(ids.map((id) => ToolCallPart.make({ id, name: "lookup", input: {} }))),
+            Message.tool({ id: ids[0], name: "lookup", resultType: "content", result: [] }),
+            Message.tool({ id: ids[1], name: "lookup", resultType: "content", result: [] }),
+          ],
+        }),
+      )
+
+      const emitted = prepared.body.input.flatMap((item) =>
+        item.type === "function_call" || item.type === "function_call_output" ? [item.call_id] : [],
+      )
+      expect(emitted.filter((id) => id.length > 64)).toEqual([])
+      expect(new Set(emitted).size).toBe(2)
+      expect(emitted[2]).toBe(emitted[0])
+      expect(emitted[3]).toBe(emitted[1])
     }),
   )
 

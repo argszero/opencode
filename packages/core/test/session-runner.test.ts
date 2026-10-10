@@ -211,6 +211,9 @@ const makeRunnerState = (compaction?: SessionRunnerModel.Resolved["compaction"])
     currentModel: model,
     compaction,
     modelResolveHook: resolvesModel,
+    // Arming the barrier simulates a plugin reload in flight: reads that wait for activation block on it.
+    activations: 0,
+    reloadBarrier: undefined as Deferred.Deferred<void> | undefined,
     systemBaseline: "Initial context",
     systemRemoved: false,
     systemUnavailable: false,
@@ -422,7 +425,17 @@ const layer = Layer.unwrap(
       Permission.node.replace(permission),
       Config.node.replace(config),
       PluginSupervisor.node.replace(Layer.empty),
-      Plugin.node.replace(Layer.mock(Plugin.Service, { awaitActivation: Effect.void })),
+      Plugin.node.replace(
+        Layer.mock(Plugin.Service, {
+          // The drain waits for activation once when it starts, so only later waits observe a reload
+          // that begins while the turn runs.
+          awaitActivation: Effect.suspend(() => {
+            state.activations++
+            if (!state.reloadBarrier || state.activations === 1) return Effect.void
+            return Deferred.await(state.reloadBarrier)
+          }),
+        }),
+      ),
       SessionModelTransport.node.replace(modelTransport),
     ]
     const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
@@ -1187,6 +1200,32 @@ describe("SessionRunnerLLM", () => {
       Expected.assistant({}, [
         Expected.completedTool({ id: "call-reloaded" }, { content: [Expected.text('{"value":"advertised"}')] }),
       ]),
+    ])
+  })
+
+  scenario("waits for a plugin reload before preparing the next step", function* (s) {
+    // A reload replaces the generation that registers the config catalogs, so a step that starts
+    // mid-reload must let it settle rather than read a catalog that is briefly missing entries.
+    yield* s.admit("Start the turn")
+    yield* s.llm.push(TestLLM.tool("call-echo", "echo", { text: "reload" }), TestLLM.text("Done", "text-reloaded"))
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* s.llm.wait(1)
+
+    s.reloadBarrier = yield* Deferred.make<void>()
+    const waiting = yield* Fiber.join(run).pipe(
+      Effect.as("completed" as const),
+      Effect.raceFirst(Effect.promise(() => Bun.sleep(200)).pipe(Effect.as("waiting" as const))),
+    )
+    expect(waiting).toBe("waiting")
+
+    yield* Deferred.succeed(s.reloadBarrier, undefined)
+    yield* Fiber.join(run)
+    expect(s.executions).toEqual(["reload"])
+    expect(s.requests).toHaveLength(2)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Start the turn"),
+      Expected.assistant({}, [Expected.completedTool({ id: "call-echo" }, { content: [Expected.text("reload")] })]),
+      Expected.assistant({}, [Expected.text("Done")]),
     ])
   })
 

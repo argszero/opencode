@@ -48,6 +48,10 @@ const layer = Layer.effect(
     const plugins = yield* Plugin.Service
     const title = yield* SessionTitle.Service
     const steps = yield* SessionStep.make
+    // The agent and model catalogs are built from config, and a reload replaces the generation that
+    // registers them, so a read that lands mid-reload can miss an entry that still exists. Wait for
+    // an in-flight reload to settle before reading the context.
+    const settled = <A, E, R>(read: Effect.Effect<A, E, R>) => plugins.awaitActivation.pipe(Effect.andThen(read))
     // Title generation starts once input is visible and must not delay model execution.
     const titles = yield* FiberMap.make<SessionSchema.ID, void, never>()
 
@@ -112,8 +116,8 @@ const layer = Layer.effect(
               if (pending?.type === "compaction") {
                 const compacted = yield* restore(
                   Effect.gen(function* () {
-                    const selected = yield* context.select(sessionID)
-                    const model = yield* context.resolveModel(selected.session)
+                    const selected = yield* settled(context.select(sessionID))
+                    const model = yield* settled(context.resolveModel(selected.session))
                     // Preview updates without admitting them after the already-delivered compaction marker.
                     const history = yield* SessionHistory.preview(
                       db,
@@ -176,7 +180,7 @@ const layer = Layer.effect(
                       onlyIfMissing: true,
                     })
                   if (promoted > 0) step = 1
-                  return { _tag: "Ready" as const, context: yield* context.load(selected) }
+                  return { _tag: "Ready" as const, context: yield* settled(context.load(selected)) }
                 }),
               )
               if (ready) return ready
@@ -196,7 +200,7 @@ const layer = Layer.effect(
     })
 
     const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
-      const selected = yield* context.select(sessionID)
+      const selected = yield* settled(context.select(sessionID))
       // A blocked initial instruction baseline must leave admitted input pending.
       yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
       return selected
@@ -212,7 +216,9 @@ const layer = Layer.effect(
       let recoverContinuation = true
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
+        const loaded =
+          initial ??
+          (yield* prepareContext(sessionID).pipe(Effect.flatMap((selected) => settled(context.load(selected)))))
         initial = undefined
         const compacted = yield* compaction.compact({ reason: "auto", context: loaded })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })

@@ -10,6 +10,7 @@ import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { isExactRootFallback } from "@opencode/util/session-title-fallback"
 import { llmClient } from "../effect/app-node-platform.js"
 import { SessionContext } from "./context.js"
+import { Plugin } from "../plugin.js"
 import { SessionEvent } from "./event.js"
 import { SessionHistory } from "./history.js"
 import type { SessionRunnerModel } from "./runner/model.js"
@@ -42,6 +43,7 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
     const llm = yield* LLMClient.Service
     const context = yield* SessionContext.Service
+    const plugins = yield* Plugin.Service
     const store = yield* SessionStore.Service
     const db = (yield* Database.Service).db
 
@@ -124,6 +126,7 @@ export const layer = Layer.effect(
             Effect.orElseSucceed(() => firstUser.text),
           )
         : firstUser.text
+      yield* plugins.awaitActivation
       const selection = yield* context.selectTitle(session)
       if (!selection) return
       const title =
@@ -153,5 +156,5 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Bus.node, llmClient, SessionContext.node, SessionStore.node, Database.node],
+  deps: [Bus.node, llmClient, Plugin.node, SessionContext.node, SessionStore.node, Database.node],
 })

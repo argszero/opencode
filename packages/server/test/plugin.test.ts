@@ -1,0 +1,32 @@
+import fs from "node:fs/promises"
+import path from "node:path"
+import { expect } from "bun:test"
+import { Effect } from "effect"
+import { tmpdir } from "../../core/test/fixture/tmpdir"
+import { it } from "../../core/test/lib/effect"
+import { startServer } from "./fixture/server"
+
+it.live("waits for plugin activation before listing plugins", () =>
+  Effect.gen(function* () {
+    const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-plugin-endpoint-")))
+    yield* Effect.promise(() =>
+      fs.writeFile(
+        path.join(tmp.path, "opencode.json"),
+        JSON.stringify({ plugins: [{ package: path.join(import.meta.dir, "fixture/plugin-list") }] }),
+      ),
+    )
+    const server = yield* startServer(tmp.path)
+    const url = new URL("/api/plugin", server.base)
+    url.searchParams.set("location[directory]", tmp.path)
+    const response = yield* Effect.promise(() => fetch(url, { headers: server.headers }))
+
+    expect(response.status).toBe(200)
+    const body: unknown = yield* Effect.promise(() => response.json())
+    if (!isRecord(body) || !Array.isArray(body["data"])) throw new Error("Expected a plugin list response")
+    expect(body["data"].some((plugin) => isRecord(plugin) && plugin["id"] === "test.plugin-list")).toBeTrue()
+  }),
+)
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}

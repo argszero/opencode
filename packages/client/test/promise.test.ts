@@ -83,6 +83,40 @@ test("config.get returns ordered config entries for a location", async () => {
   expect(request?.url).toBe("http://localhost:3000/api/config?location%5Bdirectory%5D=%2Ftmp%2Fproject")
 })
 
+test("the default transport keeps no idle deadline", async () => {
+  const transport = globalThis.fetch
+  const deadlines: Array<RequestInit | undefined> = []
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    deadlines.push(init)
+    return Promise.resolve(Response.json({ version: "2.0.0", pid: 1, urls: [], paths: { tmp: "/tmp" } }))
+  }) as typeof fetch
+  try {
+    // Bun fails an idle request after five minutes unless the transport opts out, which would drop
+    // a session command that stays pending for longer than that.
+    const client = OpenCode.make({ baseUrl: "http://localhost:3000" })
+    await client.server.info()
+  } finally {
+    globalThis.fetch = transport
+  }
+
+  expect(deadlines).toEqual([expect.objectContaining({ timeout: false })])
+})
+
+test("a caller-supplied transport is used untouched", async () => {
+  const deadlines: Array<RequestInit | undefined> = []
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    fetch: async (_input, init) => {
+      deadlines.push(init)
+      return Response.json({ version: "2.0.0", pid: 1, urls: [], paths: { tmp: "/tmp" } })
+    },
+  })
+
+  await client.server.info()
+  expect(deadlines).toHaveLength(1)
+  expect(deadlines[0]).not.toHaveProperty("timeout")
+})
+
 test("requests keep a path prefix on baseUrl", async () => {
   let request: Request | undefined
   const client = OpenCode.make({

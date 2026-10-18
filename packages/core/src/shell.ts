@@ -210,6 +210,9 @@ const layer = () =>
         if (cursor >= command.size) return { output: "", cursor: command.size, size: command.size, truncated: false }
         const start = Math.max(0, cursor)
         const length = Math.min(limit, command.size - start)
+        // An empty page is still a page: `limit: 0` passes the schema, and the bytes it asks for must
+        // not become a file range that ends before it starts.
+        if (length === 0) return { output: "", cursor: start, size: command.size, truncated: false }
         const buffer = Buffer.alloc(length)
         const bytesRead = yield* Effect.promise(
           () =>

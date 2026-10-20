@@ -44,7 +44,7 @@ If the workspace is outside the project root, only the global file is loaded. Se
 
 ## Discovery
 
-Instruction files below the workspace are discovered as the agent explores the project. Reading a file or listing a directory loads any `AGENTS.md` files between that target and the workspace.
+Instruction files below the workspace are discovered as the agent explores the project. Reading a file or listing a directory loads any `AGENTS.md` files between that target and the workspace, so guidance for an area applies without starting a new session.
 
 ```text
 my-project/                         ← current workspace
@@ -55,6 +55,19 @@ my-project/                         ← current workspace
         └── src/
             └── app.ts              read target
 ```
+
+Discovery is not limited to directories below the workspace. A target elsewhere in the same git repository loads the `AGENTS.md` files from that target upward, so an agent working in one project also follows the rules of the project it reads from or lists.
+
+```text
+repository/                         ← git repository
+├── proj-a/                         ← current workspace
+│   └── AGENTS.md                   loaded initially
+└── proj-b/
+    ├── AGENTS.md                   loaded when a file in proj-b is read
+    └── notes.txt                   read target
+```
+
+Directories whose files already contributed to the session are skipped rather than loaded twice, and a target outside the repository is external and contributes no instructions.
 
 Nested files are loaded nearest-first and deduplicated while their instruction entry remains in model-visible history. Reading the same area again does not normally inject them again. If compaction or a revert removes that entry, a later read can load the file again.
 

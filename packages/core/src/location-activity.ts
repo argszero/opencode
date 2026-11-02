@@ -1,5 +1,7 @@
 export * as LocationActivity from "./location-activity.js"
 
+import { existsSync } from "node:fs"
+import path from "node:path"
 import { Clock, Context, Duration, Effect, Layer, Option, RcMap, Schema } from "effect"
 import type { Document } from "@opencode/schema/config"
 import { Bus } from "./bus.js"
@@ -66,6 +68,14 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
             ),
             Effect.scoped,
           )
+      // A folder can gain a VCS root after its Location was compiled — `git init` in a directory that
+      // was opened first. The compiled Location keeps the identity it resolved at boot, so it reports
+      // no repository and the project id from before the repo existed, and nothing re-resolves it
+      // while the location stays in use. It cannot rebuild itself from the inside, so the sweep asks
+      // whether a root has appeared and evicts the entry, letting the next access boot a Location that
+      // sees the repository.
+      const gainedVcsRoot = (ref: Location.Ref) =>
+        Effect.sync(() => [".git", ".hg"].some((root) => existsSync(path.join(ref.directory, root))))
 
       const unsubscribe = yield* bus.listen((event) => {
         if (!isSessionEvent(event) || !event.location) return Effect.void
@@ -80,6 +90,26 @@ export function layer(options: { readonly timeToLive?: Duration.Input; readonly 
         const refs = Array.from(yield* RcMap.keys(locations.rcMap))
         const cached = new Set(refs.map(key))
         yield* Effect.forEach(refs, (ref) => (entries.has(key(ref)) ? Effect.void : touch(ref)), { discard: true })
+        // A retained Location keeps serving its compiled identity until its client closes, the same
+        // trade the idle sweep makes: evicting would end the shell under the user.
+        const gained = yield* Effect.filter(
+          refs,
+          (ref) =>
+            gainedVcsRoot(ref).pipe(
+              Effect.flatMap((gained) => (gained ? retained(ref) : Effect.succeed(true))),
+              Effect.map((skip) => !skip),
+            ),
+          { concurrency: "unbounded" },
+        )
+        yield* Effect.forEach(
+          gained,
+          (ref) =>
+            Effect.logInfo("location services refreshed for new vcs root", {
+              directory: ref.directory,
+              workspaceID: ref.workspaceID,
+            }).pipe(Effect.andThen(locations.invalidate(ref))),
+          { discard: true },
+        )
         for (const id of entries.keys()) {
           if (!cached.has(id)) entries.delete(id)
         }

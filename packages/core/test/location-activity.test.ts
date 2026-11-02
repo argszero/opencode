@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import type { FileSystem } from "@opencode/core/filesystem"
 import { describe, expect } from "bun:test"
 import { Context, Deferred, Duration, Effect, Fiber, Layer, LayerMap, RcMap, Schema } from "effect"
@@ -286,6 +290,26 @@ describe("LocationActivity eviction", () => {
         )
       }),
     )
+
+  it.effect("evicts a location that gained a vcs root after it was compiled", () =>
+    Effect.gen(function* () {
+      const map = yield* LocationServiceMap.Service
+      const directory = AbsolutePath.make(mkdtempSync(path.join(tmpdir(), "oc-vcs-root-")))
+      const ref = LocationServiceMap.canonical(Location.Ref.make({ directory }))
+
+      yield* Location.Service.pipe(Effect.provide(map.get(ref)), Effect.scoped)
+      expect(yield* RcMap.has(map.rcMap, ref)).toBe(true)
+
+      // Nothing changed, so the sweep leaves the entry alone.
+      yield* TestClock.adjust("1 minute")
+      expect(yield* RcMap.has(map.rcMap, ref)).toBe(true)
+
+      execFileSync("git", ["init", "-q"], { cwd: directory, stdio: "pipe" })
+
+      yield* TestClock.adjust("1 minute")
+      expect(yield* RcMap.has(map.rcMap, ref)).toBe(false)
+    }),
+  )
 
   it.effect("refreshes inactivity deadline for session events with non-canonical location refs", () =>
     Effect.gen(function* () {

@@ -96,6 +96,28 @@ describe("Gemini route", () => {
     }),
   )
 
+  it.effect("leaves the system instruction and tools to the cached content", () =>
+    Effect.gen(function* () {
+      const withTools = {
+        ...request,
+        tools: [
+          ToolDefinition.make({ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } }),
+        ],
+        toolChoice: { type: "auto" as const },
+      }
+      const cached = yield* compileRequest({ ...withTools, providerOptions: { cachedContent: "cachedContents/example" } })
+      const plain = yield* compileRequest(withTools)
+
+      expect(cached.body.cachedContent).toBe("cachedContents/example")
+      expect(cached.body.systemInstruction).toBeUndefined()
+      expect(cached.body.tools).toBeUndefined()
+      expect(cached.body.toolConfig).toBeUndefined()
+      expect(plain.body.systemInstruction).toEqual({ parts: [{ text: "You are concise." }] })
+      expect(plain.body.tools).toHaveLength(1)
+      expect(plain.body.toolConfig).toBeDefined()
+    }),
+  )
+
   it.effect("fits the thinking budget to half the output limit", () =>
     Effect.gen(function* () {
       const thinkingBudget = (budget: number, maxTokens = 32_000) =>

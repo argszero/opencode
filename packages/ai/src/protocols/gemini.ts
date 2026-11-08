@@ -472,21 +472,31 @@ const fromRequest = Effect.fn("Gemini.fromRequest")(function* (request: LLMReque
           },
   }
 
+  // Gemini and Vertex refuse a request that sets `cachedContent` beside a system instruction,
+  // tools or tool config: a cache carries those, so repeating them is a 400 for every request.
+  const cached = options.cachedContent
+
   return {
-    cachedContent: options.cachedContent,
+    cachedContent: cached,
     contents: yield* lowerMessages(flattened.request),
     safetySettings: options.safetySettings,
     serviceTier: options.serviceTier,
     systemInstruction:
-      request.system.length === 0 ? undefined : { parts: request.system.map((part) => ({ text: part.text })) },
-    tools: hasTools
-      ? [
-          {
-            functionDeclarations: flattened.tools.map(lowerTool),
-          },
-        ]
-      : undefined,
-    toolConfig: hasTools && request.toolChoice ? yield* lowerToolConfig(request.toolChoice) : undefined,
+      cached !== undefined || request.system.length === 0
+        ? undefined
+        : { parts: request.system.map((part) => ({ text: part.text })) },
+    tools:
+      cached !== undefined || !hasTools
+        ? undefined
+        : [
+            {
+              functionDeclarations: flattened.tools.map(lowerTool),
+            },
+          ],
+    toolConfig:
+      cached !== undefined || !hasTools || !request.toolChoice
+        ? undefined
+        : yield* lowerToolConfig(request.toolChoice),
     generationConfig: Object.values(generationConfig).some((value) => value !== undefined)
       ? generationConfig
       : undefined,

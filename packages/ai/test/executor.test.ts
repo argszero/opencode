@@ -75,6 +75,23 @@ describe("RequestExecutor", () => {
     }),
   )
 
+  it.effect("reads retry-after-ms only when it states a millisecond delay", () =>
+    Effect.sync(() => {
+      const retryAfter = (responseHeaders: Record<string, string>) =>
+        RequestExecutor.httpFailure({ message: "Rate limited", status: 429, responseHeaders }).retryAfterMs
+
+      expect(retryAfter({ "retry-after": "60" })).toBe(60_000)
+      // A blank or negative header states no delay, so the delay `Retry-After` asks for has to survive it.
+      expect(retryAfter({ "retry-after-ms": "", "retry-after": "60" })).toBe(60_000)
+      expect(retryAfter({ "retry-after-ms": "   ", "retry-after": "60" })).toBe(60_000)
+      expect(retryAfter({ "retry-after-ms": "-1", "retry-after": "60" })).toBe(60_000)
+      expect(retryAfter({ "retry-after-ms": "not-a-number", "retry-after": "60" })).toBe(60_000)
+      // An explicit zero is a stated delay: the provider asked for an immediate retry.
+      expect(retryAfter({ "retry-after-ms": "0", "retry-after": "60" })).toBe(0)
+      expect(retryAfter({ "retry-after-ms": "250", "retry-after": "60" })).toBe(250)
+    }),
+  )
+
   it.effect("classifies AWS modeled errors from every restJson1 identity location", () =>
     Effect.sync(() => {
       const cases = [

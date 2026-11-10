@@ -20,8 +20,12 @@ const normalizedHeaders = (headers: Headers.Headers) =>
 const clampRetryAfterMs = (millis: number) => Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.ceil(millis)))
 
 const retryAfterMs = (headers: Record<string, string>) => {
-  const millis = Number(headers["retry-after-ms"])
-  if (Number.isFinite(millis)) return clampRetryAfterMs(millis)
+  // A blank or negative `retry-after-ms` asks for no delay at all, which is not something a provider states by
+  // leaving the value empty or by sending a negative one: those fall through to `Retry-After` so the delay the
+  // provider asked for is not replaced by an immediate retry. An explicit `0` still means "retry now".
+  const raw = headers["retry-after-ms"]?.trim()
+  const millis = raw ? Number(raw) : Number.NaN
+  if (Number.isFinite(millis) && millis >= 0) return clampRetryAfterMs(millis)
 
   const value = headers["retry-after"]
   if (!value) return undefined

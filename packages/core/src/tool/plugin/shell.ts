@@ -54,9 +54,13 @@ const description = (shell?: string, codeMode = false) =>
     "The current session ID is available in the OPENCODE_SESSION_ID environment variable.",
   ].join(" ")
 
-const timeoutInput = (foreground: number) =>
+// A background command is only stopped by a timeout it was given, so the default the description promises cannot
+// apply to one. Code Mode has no `background` parameter, so its timeout says nothing about background commands.
+const timeoutInput = (foreground: number, background = true) =>
   Schema.optionalKey(NonNegativeInt).annotate({
-    description: `Optional timeout in milliseconds (default ${foreground}). When it expires, a foreground command moves to the background and a background command is stopped.`,
+    description: background
+      ? `Optional timeout in milliseconds. A foreground command defaults to ${foreground} and moves to the background when it expires. A background command has no timeout by default, and is stopped when a timeout given here expires.`
+      : `Optional timeout in milliseconds. A foreground command defaults to ${foreground} and moves to the background when it expires.`,
   })
 
 export const Input = Schema.Struct({
@@ -74,7 +78,7 @@ export const Input = Schema.Struct({
 
 const CodeModeInput = Schema.Struct({
   ...Struct.omit(Input.fields, ["background"]),
-  timeout: timeoutInput(CODE_MODE_TIMEOUT_MS),
+  timeout: timeoutInput(CODE_MODE_TIMEOUT_MS, false),
 })
 
 const StructuredOutput = Schema.Struct({

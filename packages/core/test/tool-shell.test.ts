@@ -1614,6 +1614,22 @@ describe("ShellTool", () => {
     }),
   )
 
+  // The timeout a model reads has to be the timeout it gets: a background command is only stopped by a timeout it
+  // was given, so the description cannot promise the default applies to one.
+  it.live("describes a background command's timeout as one only given to it", () =>
+    withTempDir((tmp) => {
+      reset()
+      return withSession(tmp.path, (registry) =>
+        Effect.gen(function* () {
+          const shell = (yield* toolDefinitions(registry)).find((candidate) => candidate.name === "shell")
+          const description = shell?.inputSchema.properties?.timeout?.description ?? ""
+          expect(description).toContain(`${ShellTool.DEFAULT_TIMEOUT_MS}`)
+          expect(description).toMatch(/a background command has no timeout by default/i)
+        }),
+      )
+    }),
+  )
+
   it.live(
     "truncates the model view and points at the saved output file when output overflows",
     () =>

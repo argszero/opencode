@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
@@ -13,7 +13,7 @@ import { Location } from "@opencode/core/location"
 import { FileAccess } from "@opencode/core/file-access"
 import { Permission } from "@opencode/core/permission"
 import { Ripgrep } from "@opencode/core/ripgrep"
-import { AbsolutePath } from "@opencode/core/schema"
+import { AbsolutePath, RelativePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { GlobTool } from "@opencode/core/tool/plugin/glob"
 import { GrepTool } from "@opencode/core/tool/plugin/grep"
@@ -44,6 +44,7 @@ const withTools = <A, E, R>(
   directory: string,
   body: (registry: Tool.Interface) => Effect.Effect<A, E, R>,
   assertions?: Permission.AssertInput[],
+  ripgrep?: Layer.Layer<Ripgrep.Service>,
 ) =>
   Effect.gen(function* () {
     const registry = yield* Tool.Service
@@ -63,6 +64,7 @@ const withTools = <A, E, R>(
               }),
           }),
         ),
+        ...(ripgrep ? [Ripgrep.node.replace(ripgrep)] : []),
       ]),
     ),
   )
@@ -408,4 +410,98 @@ describe("search tools", () => {
         ),
     ),
   )
+
+  it.live("searches from the directory an absolute pattern names", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      const root = path.join(tmp.path, "src")
+      yield* Effect.promise(() => Bun.write(path.join(root, "a.ts"), "needle\n"))
+      let observed: Ripgrep.GlobInput | undefined
+      const assertions: Permission.AssertInput[] = []
+      const result = yield* withTools(
+        tmp.path,
+        (registry) => executeTool(registry, call("glob", { pattern: path.join(root, "**") })),
+        assertions,
+        Layer.succeed(
+          Ripgrep.Service,
+          Ripgrep.Service.of({
+            find: () => Effect.succeed([]),
+            glob: (input) =>
+              Effect.sync(() => {
+                observed = input
+                return [FileSystem.Entry.make({ path: RelativePath.make("a.ts"), type: "file" })]
+              }),
+            grep: () => Effect.succeed([]),
+          }),
+        ),
+      )
+      expect(observed?.cwd).toBe(root)
+      expect(observed?.pattern).toBe("/**")
+      expect(assertions.map((input) => input.action)).toEqual(["glob"])
+      expect(result).toMatchObject({
+        status: "completed",
+        output: [{ path: path.join("src", "a.ts"), type: "file" }],
+      })
+    }),
+  )
+
+  it.live("requires external_directory approval for an absolute glob pattern outside the location", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
+      ([active, outside]) => {
+        const assertions: Permission.AssertInput[] = []
+        const root = path.join(outside.path, "src")
+        return Effect.promise(() => Bun.write(path.join(root, "outside.txt"), "outside\n")).pipe(
+          Effect.andThen(
+            withTools(
+              active.path,
+              (registry) => executeTool(registry, call("glob", { pattern: path.join(root, "**") })),
+              assertions,
+              Layer.succeed(
+                Ripgrep.Service,
+                Ripgrep.Service.of({
+                  find: () => Effect.succeed([]),
+                  glob: () => Effect.succeed([]),
+                  grep: () => Effect.succeed([]),
+                }),
+              ),
+            ),
+          ),
+          Effect.tap((result) =>
+            Effect.sync(() => {
+              expect(result.status).toBe("completed")
+              expect(assertions.map((input) => input.action)).toEqual(["external_directory", "glob"])
+              expect(assertions[0]?.resources).toEqual([path.join(root, "*").replaceAll("\\", "/")])
+            }),
+          ),
+        )
+      },
+      ([active, outside]) =>
+        Effect.promise(() =>
+          Promise.all([active[Symbol.asyncDispose](), outside[Symbol.asyncDispose]()]).then(() => undefined),
+        ),
+    ),
+  )
+})
+
+describe("glob absolute patterns", () => {
+  const cases: Array<[pattern: string, expected: ReturnType<typeof GlobTool.splitAbsolutePattern>]> = [
+    ["src/**", undefined],
+    ["**/*.ts", undefined],
+    ["/**", undefined],
+    ["/p/src/**", { path: "/p/src", pattern: "/**" }],
+    ["/p/src/**/*.ts", { path: "/p/src", pattern: "/**/*.ts" }],
+    ["/p/*.md", { path: "/p", pattern: "/*.md" }],
+    ["/p/src/a.ts", { path: "/p/src", pattern: "/a.ts" }],
+    ["/p/*/src", { path: "/p", pattern: "/*/src" }],
+  ]
+  for (const [pattern, expected] of cases)
+    test(`${pattern} searches from ${expected?.path ?? "the location"}`, () =>
+      expect(GlobTool.splitAbsolutePattern(pattern)).toEqual(expected),
+    )
+
+  if (process.platform !== "win32")
+    test("an escaped metacharacter is not a directory boundary", () =>
+      expect(GlobTool.splitAbsolutePattern("/p/a\\*b/c")).toEqual({ path: "/p/a\\*b", pattern: "/c" }),
+    )
 })

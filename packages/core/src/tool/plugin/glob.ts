@@ -46,6 +46,35 @@ export const toModelContent = (entries: EncodedOutput, truncated = false) => {
   return lines.join("\n")
 }
 
+/**
+ * An absolute pattern names its own search root. ripgrep matches a glob against paths relative to the search root and
+ * reads a leading `/` as an anchor to that root, so an absolute pattern can only ever match below a root that already
+ * contains it: from `/workspace`, `--glob=/workspace/src/**` looks for `/workspace/workspace/src/**` and finds nothing.
+ *
+ * The deepest directory before the first glob metacharacter becomes the root and the rest stays anchored, so `/p/src/**`
+ * searches `/p/src` for `/**` and `/p/*.md` searches `/p` for `/*.md`, which keeps its "direct children only" meaning.
+ */
+export function splitAbsolutePattern(pattern: string) {
+  if (!path.isAbsolute(pattern)) return undefined
+  // ripgrep reads `\` as a glob escape, so a Windows pattern is compared on the separator it accepts everywhere.
+  const source = path.sep === "/" ? pattern : pattern.replaceAll("\\", "/")
+  const head = source.slice(0, firstMetacharacter(source))
+  const separator = head.lastIndexOf("/")
+  // A pattern naming no directory (such as `/**`) is already anchored to the root it searches, so it has nothing to split.
+  if (separator <= 0) return undefined
+  return { path: source.slice(0, separator), pattern: source.slice(separator) }
+}
+
+/** Index of the first glob metacharacter that is not escaped, or the pattern's length when it holds none. */
+function firstMetacharacter(pattern: string) {
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern.charAt(index)
+    if (char === "\\") index++
+    else if ("*?[{".includes(char)) return index
+  }
+  return pattern.length
+}
+
 /** Glob leaf that defaults its filesystem root to the active Location. */
 export const Plugin = {
   id: "opencode.tool.glob",
@@ -66,40 +95,43 @@ export const Plugin = {
         editor.add({
           name,
           options: { codemode: false },
-          description: 'Search file paths using a glob pattern (examples: "**/*.ts", "src/**/*.tsx").',
+          description:
+            'Search file paths using a glob pattern (examples: "**/*.ts", "src/**/*.tsx"). An absolute pattern searches from its own directory.',
           input: Input,
           output: Output,
           execute: (input, context) =>
             Effect.gen(function* () {
               const searchPath = input.path === "undefined" || input.path === "null" ? undefined : input.path
-              const target = yield* access.resolve({ path: searchPath ?? ".", kind: "directory" })
+              const absolute = splitAbsolutePattern(input.pattern)
+              const pattern = absolute?.pattern ?? input.pattern
+              const root = absolute?.path ?? searchPath ?? "."
+              const target = yield* access.resolve({ path: root, kind: "directory" })
               yield* access.authorizeExternal([target], context)
               yield* permission.assert({
                 action: name,
                 resources: [input.pattern],
                 save: ["*"],
                 metadata: {
-                  root: searchPath ?? ".",
+                  root,
                   path: searchPath,
                   hidden: input.hidden,
                   limit: input.limit,
                 },
                 ...Permission.invocation(context),
               })
-              const type = yield* ToolSearch.pathType(environment.files, target.absolute, searchPath ?? ".")
+              const type = yield* ToolSearch.pathType(environment.files, target.absolute, root)
               if (type !== "directory")
-                return yield* Effect.fail(
-                  new ToolFailure({ message: `Search path is not a directory: ${searchPath ?? "."}` }),
-                )
-              const root = target.absolute
+                return yield* Effect.fail(new ToolFailure({ message: `Search path is not a directory: ${root}` }))
               const result = yield* ToolSearch.bounded(input.limit ?? FileSystem.DEFAULT_SEARCH_LIMIT, (limit) =>
-                ripgrep.glob({ cwd: root, pattern: input.pattern, hidden: input.hidden, limit }),
+                ripgrep.glob({ cwd: target.absolute, pattern, hidden: input.hidden, limit }),
               )
               return {
                 entries: result.items.map((entry) =>
                   FileSystem.Entry.make({
                     ...entry,
-                    path: RelativePath.make(path.relative(location.directory, path.resolve(root, entry.path))),
+                    path: RelativePath.make(
+                      path.relative(location.directory, path.resolve(target.absolute, entry.path)),
+                    ),
                   }),
                 ),
                 truncated: result.truncated,

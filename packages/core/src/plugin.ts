@@ -47,8 +47,12 @@ const layer = Layer.effect(
       (items: readonly Plugin.Info[]) => [items, Array.from(active.values(), (entry) => entry.plugin.gui?.revision)],
       () => bus.publish(Plugin.Event.Updated, {}).pipe(Effect.asVoid),
     )
+    // Read through rather than returning the published inventory. A registration is removed the moment its scope
+    // closes, which is before the replacement is loaded, so a stored snapshot kept calling a reloading plugin active
+    // for the whole load while the tool list had already dropped its tools. Every other state in the server is
+    // read-through for the same reason.
     const list = Effect.fn("Plugin.list")(function* () {
-      return inventory
+      return snapshot()
     })
     const gui = Effect.fn("Plugin.gui")(function* (id: Plugin.ID) {
       const gui = active.get(id)?.plugin.gui

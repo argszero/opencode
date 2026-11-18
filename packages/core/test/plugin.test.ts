@@ -2,7 +2,7 @@ import { expect } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "path"
-import { Clock, Deferred, Effect, Fiber, Logger, Stream } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Logger, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { Command } from "@opencode/core/command"
 import { Bus } from "@opencode/core/bus"
@@ -10,6 +10,7 @@ import { Credential } from "@opencode/core/credential"
 import { Integration } from "@opencode/core/integration"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHost } from "@opencode/core/plugin/host"
+import { Tool } from "@opencode/core/tool"
 import { Rpc } from "@opencode/core/rpc"
 import { Event } from "@opencode/schema/config"
 import { PluginModule } from "@opencode/core/plugin/module"
@@ -752,5 +753,49 @@ it.effect("unknown event type warnings name the subscribing plugin", () =>
     ])
 
     expect(warnings).toEqual([["ignoring unknown event types", { pluginID: "probe", types: ["test.unknown"] }]])
+  }),
+)
+
+it.effect("never reports a reloading plugin as active once its tools are gone", () =>
+  Effect.gen(function* () {
+    const plugins = yield* Plugin.Service
+    const tools = yield* Tool.Service
+    // Sampled from inside the replacement's own setup, which runs after the previous generation closed its scope and
+    // before the replacement is registered. That is the whole window the report calls the gap.
+    const samples: string[] = []
+    const tooled = (revision: string, sample = false): Plugin.Generation => ({
+      id: "alpha-plugin",
+      revision,
+      effect: (ctx) =>
+        Effect.gen(function* () {
+          if (sample) {
+            const listed = yield* ctx.plugin.list()
+            const read = yield* Effect.exit(ctx.tool.list())
+            samples.push(
+              Exit.isSuccess(read)
+                ? `${listed.data.length > 0}:${read.value.some((tool) => tool.id === "alpha")}`
+                : `read-failed:${Cause.pretty(read.cause).slice(0, 300)}`,
+            )
+          }
+          yield* ctx.tool.transform((editor) =>
+            editor.add({
+              name: "alpha",
+              options: { codemode: false },
+              description: "Alpha",
+              input: Schema.Struct({}),
+              execute: () => Effect.succeed({ content: "ok" }),
+            }),
+          )
+        }).pipe(Effect.orDie),
+    })
+
+    yield* plugins.activate([tooled("1")])
+    expect((yield* tools.list()).map((tool) => tool.id)).toContain("alpha")
+
+    yield* plugins.activate([tooled("2", true)])
+
+    expect(samples).toEqual(["false:false"])
+    expect((yield* plugins.list()).map((info) => info.id)).toEqual([Plugin.ID.make("alpha-plugin")])
+    expect((yield* tools.list()).map((tool) => tool.id)).toContain("alpha")
   }),
 )

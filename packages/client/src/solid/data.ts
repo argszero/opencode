@@ -778,6 +778,23 @@ export function createData(config: CreateDataInput) {
     )
   }
 
+  // Events that only invalidate a location's cached catalogs. Unlike session events they carry no
+  // state of their own, so one published without a location can be applied to every held location.
+  const unscopedCatalogEvents = new Set([
+    "provider.updated",
+    "model.updated",
+    "agent.updated",
+    "command.updated",
+    "skill.updated",
+    "vcs.branch.updated",
+    "reference.updated",
+    "integration.updated",
+    "config.updated",
+    "websearch.updated",
+    "mcp.status.changed",
+    "mcp.resources.changed",
+  ])
+
   function handleEvent(event: OpenCodeEvent) {
     switch (event.type) {
       case "server.connected": {
@@ -1457,90 +1474,104 @@ export function createData(config: CreateDataInput) {
       return
     }
 
-    if (!event.location) return
-    const location = event.location
-    switch (event.type) {
-      case "provider.updated":
-        refreshLocation("provider", result.location.provider, location)
-        break
-      case "model.updated":
-        refreshLocation("model", result.location.model, location)
-        break
-      case "agent.updated":
-        refreshLocation("agent", result.location.agent, location)
-        break
-      case "command.updated":
-        refreshLocation("command", result.location.command, location)
-        break
-      case "skill.updated":
-        refreshLocation("skill", result.location.skill, location)
-        break
-      case "vcs.branch.updated":
-        // The event names only the current branch. Reload the rest: the default branch and provider can change with
-        // it, and a read served before the location's VCS provider loaded has neither.
-        refreshLocation("vcs", result.location.vcs, location)
-        break
-      case "form.created":
-        if (store.session.form[event.data.form.sessionID]?.some((form) => form.id === event.data.form.id)) break
-        setStore("session", "form", event.data.form.sessionID, [
-          ...(store.session.form[event.data.form.sessionID] ?? []),
-          event.data.form.sessionID === "global" ? { ...event.data.form, location } : event.data.form,
-        ])
-        break
-      case "shell.created":
-        setStore("location", locationKey(location), (data) => ({
-          shell: {
-            ...data?.shell,
-            [event.data.info.id]: { ...event.data.info, location },
-          },
-        }))
-        break
-      case "shell.exited":
-      case "shell.deleted":
-        if (!store.location[locationKey(location)]?.shell?.[event.data.id]) break
-        setStore("location", locationKey(location), (data) => ({
-          shell: Object.fromEntries(Object.entries(data?.shell ?? {}).filter(([id]) => id !== event.data.id)),
-        }))
-        break
-      case "reference.updated":
-        refreshLocation("reference", result.location.reference, location)
-        break
-      case "integration.updated": {
-        refreshUsageLimits(location)
-        const active =
-          hasLocation("integration", location) || hasLocation("model", location) || hasLocation("provider", location)
-        result.location.integration.invalidate(location)
-        result.location.model.invalidate(location)
-        result.location.provider.invalidate(location)
-        if (active)
-          refresh(() =>
-            Promise.all([
-              result.location.integration.sync(location),
-              result.location.model.sync(location),
-              result.location.provider.sync(location),
-            ]),
-          )
-        break
+    // A change applied outside a Location-scoped fiber — a plugin registering its agents from a
+    // microtask, for example — publishes its catalog event with no location, and the server publishes
+    // it once. Dropping that event leaves the catalog stale for the rest of the session, so it is
+    // applied to every location this client already holds instead. `refreshLocation` only reloads the
+    // fields that location has actually read, so an unscoped event costs no request per idle location.
+    const locations = event.location
+      ? [event.location]
+      : unscopedCatalogEvents.has(event.type)
+        ? Object.keys(store.location).map((key) => {
+            const ref = JSON.parse(key) as [string, string | null]
+            return { directory: ref[0], workspaceID: ref[1] ?? undefined }
+          })
+        : []
+    if (locations.length === 0) return
+    for (const location of locations) {
+      switch (event.type) {
+        case "provider.updated":
+          refreshLocation("provider", result.location.provider, location)
+          break
+        case "model.updated":
+          refreshLocation("model", result.location.model, location)
+          break
+        case "agent.updated":
+          refreshLocation("agent", result.location.agent, location)
+          break
+        case "command.updated":
+          refreshLocation("command", result.location.command, location)
+          break
+        case "skill.updated":
+          refreshLocation("skill", result.location.skill, location)
+          break
+        case "vcs.branch.updated":
+          // The event names only the current branch. Reload the rest: the default branch and provider can change with
+          // it, and a read served before the location's VCS provider loaded has neither.
+          refreshLocation("vcs", result.location.vcs, location)
+          break
+        case "form.created":
+          if (store.session.form[event.data.form.sessionID]?.some((form) => form.id === event.data.form.id)) break
+          setStore("session", "form", event.data.form.sessionID, [
+            ...(store.session.form[event.data.form.sessionID] ?? []),
+            event.data.form.sessionID === "global" ? { ...event.data.form, location } : event.data.form,
+          ])
+          break
+        case "shell.created":
+          setStore("location", locationKey(location), (data) => ({
+            shell: {
+              ...data?.shell,
+              [event.data.info.id]: { ...event.data.info, location },
+            },
+          }))
+          break
+        case "shell.exited":
+        case "shell.deleted":
+          if (!store.location[locationKey(location)]?.shell?.[event.data.id]) break
+          setStore("location", locationKey(location), (data) => ({
+            shell: Object.fromEntries(Object.entries(data?.shell ?? {}).filter(([id]) => id !== event.data.id)),
+          }))
+          break
+        case "reference.updated":
+          refreshLocation("reference", result.location.reference, location)
+          break
+        case "integration.updated": {
+          refreshUsageLimits(location)
+          const active =
+            hasLocation("integration", location) || hasLocation("model", location) || hasLocation("provider", location)
+          result.location.integration.invalidate(location)
+          result.location.model.invalidate(location)
+          result.location.provider.invalidate(location)
+          if (active)
+            refresh(() =>
+              Promise.all([
+                result.location.integration.sync(location),
+                result.location.model.sync(location),
+                result.location.provider.sync(location),
+              ]),
+            )
+          break
+        }
+        case "config.updated":
+          refreshLocation("config", result.location.config, location)
+          if (hasLocation("websearch", location)) refresh(() => result.location.websearch.refresh(location))
+          break
+        case "websearch.updated":
+          if (hasLocation("websearch", location)) refresh(() => result.location.websearch.refresh(location))
+          break
+        // Authenticating an MCP integration reconnects its server, which emits mcp.status.changed,
+        // so the mcp list syncs here rather than off integration.updated. The server emits one event
+        // per MCP server as each settles, so a location booting nine servers emitted nine refetches.
+        case "mcp.status.changed": {
+          const active = hasLocation("mcpServer", location)
+          result.location.mcp.server.invalidate(location)
+          if (active) settle(`mcp.status:${locationKey(location)}`, () => result.location.mcp.server.sync(location))
+          break
+        }
+        case "mcp.resources.changed":
+          refreshLocation("mcpResource", result.location.mcp.resource, location)
+          break
       }
-      case "config.updated":
-        refreshLocation("config", result.location.config, location)
-        if (hasLocation("websearch", location)) refresh(() => result.location.websearch.refresh(location))
-        break
-      case "websearch.updated":
-        if (hasLocation("websearch", location)) refresh(() => result.location.websearch.refresh(location))
-        break
-      // Authenticating an MCP integration reconnects its server, which emits mcp.status.changed,
-      // so the mcp list syncs here rather than off integration.updated. The server emits one event
-      // per MCP server as each settles, so a location booting nine servers emitted nine refetches.
-      case "mcp.status.changed": {
-        const active = hasLocation("mcpServer", location)
-        result.location.mcp.server.invalidate(location)
-        if (active) settle(`mcp.status:${locationKey(location)}`, () => result.location.mcp.server.sync(location))
-        break
-      }
-      case "mcp.resources.changed":
-        refreshLocation("mcpResource", result.location.mcp.resource, location)
-        break
     }
   }
 

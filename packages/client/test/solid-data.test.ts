@@ -1174,6 +1174,76 @@ test("ignores catalog updates for unloaded locations while refreshing loaded loc
   }
 })
 
+test("refreshes every held catalog when a catalog update arrives with no location", async () => {
+  const listeners = new Set<Parameters<CreateDataInput["event"]["listen"]>[0]>()
+  const requests: Array<[string, string | null]> = []
+  const current = { version: "v1" }
+  const api = OpenCode.make({
+    baseUrl: "http://opencode.local",
+    fetch: async (input, init) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      const url = new URL(request.url)
+      const directory = url.searchParams.get("location[directory]") ?? "/project"
+      requests.push([url.pathname, directory])
+      const location = { directory }
+      if (url.pathname === "/api/agent")
+        return Response.json({
+          location,
+          data: [
+            {
+              id: current.version,
+              name: current.version,
+              mode: "primary",
+              hidden: false,
+              request: { headers: {}, body: {} },
+              permissions: [],
+            },
+          ],
+        })
+      throw new Error(`Unexpected request: ${request.url}`)
+    },
+  })
+  const setup = createRoot((dispose) => ({
+    data: createData({
+      api: () => api,
+      directory: "/project",
+      event: {
+        on: () => () => {},
+        listen(handler) {
+          listeners.add(handler)
+          return () => listeners.delete(handler)
+        },
+      },
+      connection: { status: () => "connected" },
+    }),
+    dispose,
+  }))
+  const loaded = { directory: "/project" }
+  const other = { directory: "/other" }
+  const emit = (details: OpenCodeEvent) => listeners.forEach((listener) => listener({ name: details.type, details }))
+
+  try {
+    await Promise.all([setup.data.location.agent.sync(loaded), setup.data.location.agent.sync(other)])
+    requests.length = 0
+    current.version = "v2"
+
+    // A plugin that finalizes its agents from a microtask publishes this without a location.
+    emit({ id: "evt_agent_no_location", created: 1, type: "agent.updated", data: {} })
+
+    await wait(
+      () =>
+        setup.data.location.agent.list(loaded)?.[0]?.id === "v2" &&
+        setup.data.location.agent.list(other)?.[0]?.id === "v2",
+    )
+    expect(requests.sort()).toEqual([
+      ["/api/agent", "/other"],
+      ["/api/agent", "/project"],
+    ])
+  } finally {
+    setup.dispose()
+  }
+})
+
 test("revalidates model discovery when an update overtakes an in-flight model list", async () => {
   const started = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()

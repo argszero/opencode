@@ -92,6 +92,34 @@ test.skipIf(process.platform === "win32")("write_terminal sends text as-is to th
   expect(tui.setup.renderer.currentFocusedRenderable instanceof EmbeddedTerminalRenderable).toBe(false)
 })
 
+test.skipIf(process.platform === "win32")("close_terminal ends the session's terminal instead of leaving the pane", async () => {
+  await using tui = await start(true)
+  const call = await initialize(tui)
+  await tui.setup.waitForFrame((frame) => frame.includes("Client MCP message"))
+
+  // Nothing is open, so there is nothing to close and no terminal is created.
+  expect(await call("close_terminal", {}, open.id)).toMatchObject({
+    isError: true,
+    content: [{ text: "No terminal is open for this session" }],
+  })
+  expect(tui.created).toEqual([])
+
+  expect(await call("open_terminal", {}, open.id)).toMatchObject({ content: [{ text: "Opened terminal pty_fixture" }] })
+  await tui.setup.waitForFrame((frame) => frame.includes("Fixture shell"))
+
+  expect(await call("close_terminal", {}, other.id)).toMatchObject({
+    isError: true,
+    content: [{ text: "session not open in this TUI" }],
+  })
+  expect(await call("close_terminal", {}, open.id)).toMatchObject({
+    content: [{ text: "Closed terminal pty_fixture" }],
+  })
+  expect(tui.closed).toEqual([pty.id])
+  // The server no longer lists it, so opening again starts a fresh terminal instead of reusing the closed one.
+  expect(await call("open_terminal", {}, open.id)).toMatchObject({ content: [{ text: "Opened terminal pty_fixture" }] })
+  expect(tui.created).toEqual([open.id, open.id])
+})
+
 test.skipIf(process.platform === "win32")("does not connect when the experiment is off", async () => {
   await using tui = await start(false)
   await tui.setup.waitForFrame((frame) => frame.includes("Client MCP message"))
@@ -129,6 +157,7 @@ async function start(enabled: boolean) {
   await setup.renderer.setupTerminal()
   setup.renderer.start()
   const created: string[] = []
+  const closed: string[] = []
   const input: Buffer[] = []
   const requests: string[] = []
   const message = { id: "message-0", type: "user", text: "Client MCP message", time: { created: 0 } }
@@ -142,10 +171,15 @@ async function start(enabled: boolean) {
       if (url.pathname === `/api/session/${item.id}/permission`) return json({ data: [] })
       if (url.pathname === `/api/experimental/session/${item.id}/terminal`) {
         if (request.method === "POST") created.push(item.id)
-        return json({ data: request.method === "POST" ? pty : created.includes(item.id) ? [pty] : [] })
+        const running = created.includes(item.id) && !closed.includes(pty.id)
+        return json({ data: request.method === "POST" ? pty : running ? [pty] : [] })
       }
     }
     if (url.pathname === "/api/session/ses_mcp_missing") return json({ error: "not found" }, { status: 404 })
+    if (url.pathname === `/api/experimental/persistent-pty/${pty.id}` && request.method === "DELETE") {
+      closed.push(pty.id)
+      return new Response(null, { status: 204 })
+    }
     if (url.pathname === "/api/experimental/persistent-pty/pty_fixture/snapshot")
       return json({
         data: { info: pty, text: "Fixture shell", checkpoint: Buffer.from("Fixture shell").toString("base64") },
@@ -206,6 +240,7 @@ async function start(enabled: boolean) {
   return {
     setup,
     created,
+    closed,
     requests,
     input: () => Buffer.concat(input).toString(),
     mcp,

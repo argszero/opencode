@@ -1,4 +1,4 @@
-import type { PersistentPtyInfo } from "@opencode/client"
+import { isPtyNotFoundError, type PersistentPtyInfo } from "@opencode/client"
 import { createSignal, onCleanup } from "solid-js"
 import { createSimpleContext } from "./helper"
 import { useClient } from "./client"
@@ -111,6 +111,13 @@ export const { use: useSessionTerminals, provider: SessionTerminalsProvider } = 
         await refresh(sessionID)
         await selectTerminal(sessionID, terminal.id, options)
         return terminal
+      },
+      // A terminal the server has already forgotten, because its shell exited, counts as closed.
+      async close(sessionID: string, ptyID: string) {
+        await client.api.experimental.persistentPty.remove({ ptyID }).catch((error) => {
+          if (!isPtyNotFoundError(error)) throw error
+        })
+        await refresh(sessionID)
       },
       write(ptyID: string, data: Uint8Array) {
         const writer = writers.get(ptyID)

@@ -33,8 +33,18 @@ export function ClientMcp() {
     return { content: [{ type: "text" as const, text: `Wrote to terminal ${result}` }] }
   }
 
-  // Resolves the terminal open_terminal shows (selected, else newest, else a new one), or a tool failure.
-  const terminalFor = async (calledBy: string | undefined) => {
+  const closeTerminal = async (calledBy: string | undefined) => {
+    const target = await sessionFor(calledBy)
+    if (typeof target !== "string") return target
+    const current = terminals.get(target)
+    const ptyID = current.selectedTerminalID ?? current.terminals.at(-1)?.id
+    if (!ptyID) return failure("No terminal is open for this session")
+    await terminals.close(target, ptyID)
+    return { content: [{ type: "text" as const, text: `Closed terminal ${ptyID}` }] }
+  }
+
+  // Resolves the session whose terminal panes are on screen, or a tool failure.
+  const sessionFor = async (calledBy: string | undefined) => {
     if (!calledBy) return failure("Unknown session")
     if (!data.session.get(calledBy)) await data.session.sync(calledBy).catch(() => undefined)
     if (!data.session.get(calledBy)) return failure("Unknown session")
@@ -52,6 +62,13 @@ export function ClientMcp() {
     if (!target) return failure("session not open in this TUI")
     if (!data.session.get(target)) await data.session.sync(target).catch(() => undefined)
     await terminals.refresh(target)
+    return target
+  }
+
+  // Resolves the terminal open_terminal shows (selected, else newest, else a new one), or a tool failure.
+  const terminalFor = async (calledBy: string | undefined) => {
+    const target = await sessionFor(calledBy)
+    if (typeof target !== "string") return target
     // The agent opened it, so don't move the user's keyboard focus into a live shell.
     const current = terminals.get(target)
     const existing = current.selectedTerminalID ?? current.terminals.at(-1)?.id
@@ -97,6 +114,13 @@ export function ClientMcp() {
                     required: ["text"],
                   },
                   handler: (args, ctx) => writeTerminal(ctx.sessionID, args.text),
+                },
+                {
+                  name: "close_terminal",
+                  description:
+                    "Close the current session's terminal in the user's TUI, ending its shell. Reports an error when the session has no terminal open, and never opens one.",
+                  inputSchema: { type: "object" },
+                  handler: (_args, ctx) => closeTerminal(ctx.sessionID),
                 },
               ],
             }),
